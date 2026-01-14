@@ -39,12 +39,28 @@ def fetch_items(token, login, project_number):
           items(first: 100, after: $after) {
             pageInfo { hasNextPage endCursor }
             nodes {
+              content {
+                __typename
+                ... on Issue {
+                  title
+                  milestone { title dueOn }
+                }
+                ... on PullRequest {
+                  title
+                  milestone { title dueOn }
+                }
+                ... on DraftIssue {
+                  title
+                }
+              }
               fieldValues(first: 20) {
                 nodes {
                   __typename
                   ... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2FieldCommon { name } } }
                   ... on ProjectV2ItemFieldDateValue { date field { ... on ProjectV2FieldCommon { name } } }
                   ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2FieldCommon { name } } }
+                  ... on ProjectV2ItemFieldMilestoneValue { milestone { title dueOn } field { ... on ProjectV2FieldCommon { name } } }
+                  ... on ProjectV2ItemFieldIterationValue { title startDate duration field { ... on ProjectV2FieldCommon { name } } }
                 }
               }
             }
@@ -79,10 +95,43 @@ def extract_field(fields, name):
     return None
 
 
+def extract_milestone(node):
+    """Extract milestone info (title, dueOn) from node content (Issue/PR) or fieldValues."""
+    # First try content.milestone (GitHub repo milestone on Issue/PR)
+    content = node.get("content")
+    if content and content.get("milestone"):
+        ms = content["milestone"]
+        return {"title": ms.get("title"), "due": ms.get("dueOn")}
+
+    # Fallback to fieldValues (Project field milestone)
+    fields = (node.get("fieldValues") or {}).get("nodes") or []
+    for f in fields:
+        if f.get("__typename") == "ProjectV2ItemFieldMilestoneValue":
+            ms = f.get("milestone")
+            if ms:
+                return {"title": ms.get("title"), "due": ms.get("dueOn")}
+    return None
+
+
+def extract_iteration(fields):
+    """Extract iteration info (title, startDate, duration) from fields."""
+    for f in fields:
+        if f.get("__typename") == "ProjectV2ItemFieldIterationValue":
+            return {
+                "title": f.get("title"),
+                "start": f.get("startDate"),
+                "duration": f.get("duration"),
+            }
+    return None
+
+
 def parse_date(s):
     if not s:
         return None
     try:
+        # Handle ISO format with timezone (e.g., "2026-06-14T00:00:00Z")
+        if "T" in s:
+            s = s.split("T")[0]
         return date.fromisoformat(s)
     except ValueError:
         return None
@@ -92,13 +141,40 @@ def escape(s):
     return re.sub(r"[\n\r:]+", " ", s).strip()
 
 
+def fetch_repo_milestones(token, owner, repo):
+    """Fetch milestones directly from a repository."""
+    query = """
+    query($owner: String!, $repo: String!) {
+      repository(owner: $owner, name: $repo) {
+        milestones(first: 100, states: [OPEN, CLOSED]) {
+          nodes {
+            title
+            dueOn
+            description
+          }
+        }
+      }
+    }
+    """
+    resp = graphql(token, query, {"owner": owner, "repo": repo})
+    if "errors" in resp:
+        die(f"GraphQL error: {resp['errors']}")
+    repo_data = resp.get("data", {}).get("repository")
+    if not repo_data:
+        die(f"Repository {owner}/{repo} not found or no access")
+    return repo_data.get("milestones", {}).get("nodes", [])
+
+
 def main():
     parser = argparse.ArgumentParser(description="Export GitHub Project to Mermaid Gantt")
     parser.add_argument("--login", required=True, help="GitHub username")
     parser.add_argument("--project", type=int, required=True, help="Project number")
+    parser.add_argument("--repo", help="Repository (owner/name) to fetch milestones from")
     parser.add_argument("--group", default="Subject", help="Field to group by")
     parser.add_argument("--start", default="Start date", help="Start date field")
     parser.add_argument("--end", default="End date", help="End date field")
+    parser.add_argument("--list", action="store_true", help="List all items (debug)")
+    parser.add_argument("--include-undated", action="store_true", help="Include tasks without dates (uses today)")
     args = parser.parse_args()
 
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
@@ -107,28 +183,92 @@ def main():
 
     title, raw = fetch_items(token, args.login, args.project)
 
-    # Parse items
+    # Debug: list all items
+    if args.list:
+        print(f"Project: {title}")
+        print(f"Items: {len(raw)}")
+        for i, node in enumerate(raw):
+            fields = (node.get("fieldValues") or {}).get("nodes") or []
+            name = extract_field(fields, "Title") or "(no title)"
+            ms = extract_milestone(node)
+            it = extract_iteration(fields)
+            start = extract_field(fields, args.start)
+            end = extract_field(fields, args.end)
+            group = extract_field(fields, args.group)
+            print(f"\n{i+1}. {name}")
+            print(f"   Raw node: {node}")
+            print(f"   Group: {group or '-'}")
+            print(f"   Start: {start or '-'}, End: {end or '-'}")
+            if ms:
+                print(f"   Milestone: {ms['title']} (due: {ms['due'] or '-'})")
+            if it:
+                print(f"   Iteration: {it['title']} (start: {it['start']}, {it['duration']} days)")
+        return
+
+    # Parse items into tasks and milestones
     tasks = []
+    milestones = {}  # title -> due date
+    today = date.today()
+
+    # Fetch milestones from repo if specified
+    if args.repo:
+        parts = args.repo.split("/")
+        if len(parts) != 2:
+            die("--repo must be in format owner/name")
+        owner, repo_name = parts
+        repo_milestones = fetch_repo_milestones(token, owner, repo_name)
+        for ms in repo_milestones:
+            ms_due = parse_date(ms.get("dueOn"))
+            if ms_due and ms.get("title"):
+                milestones[ms["title"]] = ms_due
+
     for node in raw:
         fields = (node.get("fieldValues") or {}).get("nodes") or []
         name = extract_field(fields, "Title")
         if not name:
             continue
+
+        # Check for milestone
+        ms = extract_milestone(node)
+        if ms and ms.get("title"):
+            ms_due = parse_date(ms.get("due"))
+            if ms_due and ms["title"] not in milestones:
+                milestones[ms["title"]] = ms_due
+
+        # Check for iteration (can use as date source)
+        it = extract_iteration(fields)
+
         start = parse_date(extract_field(fields, args.start))
         end = parse_date(extract_field(fields, args.end))
+
+        # Fallback to iteration dates if no start/end
+        if not start and not end and it:
+            start = parse_date(it.get("start"))
+            if start and it.get("duration"):
+                from datetime import timedelta
+                end = start + timedelta(days=int(it["duration"]))
+
+        # Handle tasks without dates
         if not start and not end:
-            continue
+            if args.include_undated:
+                # Use today as placeholder
+                start = today
+                end = today
+            else:
+                continue
+
         if not start:
             start = end
         if not end:
             end = start
+
         group = extract_field(fields, args.group) or "Other"
         tasks.append({"name": escape(name), "group": escape(group), "start": start, "end": end})
 
-    if not tasks:
-        die("No tasks with dates found")
+    if not tasks and not milestones:
+        die("No tasks found")
 
-    # Group
+    # Group tasks
     groups = {}
     for t in tasks:
         groups.setdefault(t["group"], []).append(t)
@@ -139,6 +279,15 @@ def main():
     print(f"  title {escape(title)}")
     print("  dateFormat YYYY-MM-DD")
     print()
+
+    # Milestones section
+    if milestones:
+        print("  section Milestones")
+        for ms_title, ms_due in sorted(milestones.items(), key=lambda x: x[1]):
+            print(f"  {escape(ms_title)} : milestone, m{hash(ms_title) % 1000}, {ms_due}, 0d")
+        print()
+
+    # Task sections
     for g in sorted(groups.keys()):
         print(f"  section {g}")
         for t in sorted(groups[g], key=lambda x: x["start"]):
