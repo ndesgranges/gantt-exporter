@@ -43,10 +43,12 @@ def fetch_items(token, login, project_number):
                 __typename
                 ... on Issue {
                   title
+                  closedAt
                   milestone { title dueOn }
                 }
                 ... on PullRequest {
                   title
+                  closedAt
                   milestone { title dueOn }
                 }
                 ... on DraftIssue {
@@ -172,7 +174,8 @@ def main():
     parser.add_argument("--repo", help="Repository (owner/name) to fetch milestones from")
     parser.add_argument("--group", default="Subject", help="Field to group by")
     parser.add_argument("--start", default="Start date", help="Start date field")
-    parser.add_argument("--end", default="End date", help="End date field")
+    parser.add_argument("--default-duration", type=int, default=7, help="Default duration in days for tasks without end date")
+    parser.add_argument("--min-duration", type=int, default=3, help="Minimum visual duration in days for short tasks")
     parser.add_argument("--list", action="store_true", help="List all items (debug)")
     parser.add_argument("--include-undated", action="store_true", help="Include tasks without dates (uses today)")
     args = parser.parse_args()
@@ -224,6 +227,7 @@ def main():
 
     for node in raw:
         fields = (node.get("fieldValues") or {}).get("nodes") or []
+        content = node.get("content") or {}
         name = extract_field(fields, "Title")
         if not name:
             continue
@@ -239,7 +243,11 @@ def main():
         it = extract_iteration(fields)
 
         start = parse_date(extract_field(fields, args.start))
-        end = parse_date(extract_field(fields, args.end))
+
+        # End date priority: closedAt > Target date > default duration
+        closed_at = parse_date(content.get("closedAt"))
+        target_date = parse_date(extract_field(fields, "Target date"))
+        end = closed_at or target_date
 
         # Fallback to iteration dates if no start/end
         if not start and not end and it:
@@ -251,16 +259,22 @@ def main():
         # Handle tasks without dates
         if not start and not end:
             if args.include_undated:
-                # Use today as placeholder
+                # Use today as start, with default duration
                 start = today
-                end = today
             else:
                 continue
 
         if not start:
             start = end
         if not end:
-            end = start
+            # Give task a default duration
+            from datetime import timedelta
+            end = start + timedelta(days=args.default_duration)
+
+        # Ensure minimum visual duration
+        from datetime import timedelta
+        if (end - start).days < args.min_duration:
+            end = start + timedelta(days=args.min_duration)
 
         group = extract_field(fields, args.group) or "Other"
         tasks.append({"name": escape(name), "group": escape(group), "start": start, "end": end})
@@ -273,8 +287,16 @@ def main():
     for t in tasks:
         groups.setdefault(t["group"], []).append(t)
 
+    # Calculate max group name length for leftPadding
+    max_group_name_len = max((len(task["group"]) for task in tasks), default=0)
+    if milestones:
+        max_group_name_len = max(max_group_name_len, len("Milestones"))
+    # Rough estimate: ~6-7 pixels per character, aim for padding
+    left_padding = max(150, min(500, max_group_name_len * 7))
+
     # Output
     print("```mermaid")
+    print(f"%%{{init: {{'gantt': {{'leftPadding': {left_padding}}}}}}}%%")
     print("gantt")
     print(f"  title {escape(title)}")
     print("  dateFormat YYYY-MM-DD")
