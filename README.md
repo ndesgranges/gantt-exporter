@@ -1,7 +1,6 @@
 # Export GitHub to a Gantt (Mermaid)
 
-This repo includes a small script that pulls a GitHub via API and generate
-a Gantt as Mermaid diagram
+This repo allows exporting a GitHub project roadmap into a Mermaid Gantt graph.
 
 ## 1 - Prerequisites
 
@@ -20,12 +19,23 @@ export GITHUB_TOKEN="<your_token_here>"
 
 
 ```sh
-python tools/export_gantt.py \
+python export_gantt.py \
     --login YOUR_GITHUB_LOGIN \
     --project YOUR_PROJECT_ID
 ```
 
+You might need to specify the repo it's linked to if you need to get
+the milestones. Those are linked to the repository.
+
+To do so, specify the
+repository `YOUR_USERNAME/YOUR_REPOSITORY` with option `--repo`
+
 Replace `YOUR_GITHUB_LOGIN` and `YOUR_PROJECT_ID`
+
+For additional help, issue the command :
+```sh
+python export_gantt.py -h
+```
 
 
 ## 4 - How to find the Project number
