@@ -1,5 +1,8 @@
 # Export GitHub to a Gantt (Mermaid)
 
+[![buymeacoffee](https://img.shields.io/badge/buy%20me%20a%20coffee-%23FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/ndesgranges)
+
+
 This repo allows exporting a GitHub project roadmap into a Mermaid Gantt graph.
 
 ## 1 - Prerequisites
