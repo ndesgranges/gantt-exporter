@@ -35,3 +35,22 @@ GitHub Project URLs include the project number.
 User projects look like: `https://github.com/users/<USER>/projects/<NUMBER>`
 
 The `<NUMBER>` part is the `--project` you pass to the script.
+
+
+## Licensing
+
+This project is dual-licensed.
+
+### Open Source License (AGPL v3)
+You may use, modify, and distribute this software
+under the terms of the GNU AGPL v3.
+
+### Commercial License
+If you want to:
+- Use this software in a commercial product
+- Offer it as a hosted service without releasing source
+- Distribute modified versions without AGPL obligations
+
+You must obtain a commercial license.
+
+Contact: sales@nicolasdesgranges.fr
